@@ -971,15 +971,15 @@ body {
 }
 
 /*
- * The card in the agent's hand. Screen space, above the wall and below the
- * hand; its transform is a matrix3d homography written every frame by
- * lib/carry.ts. It sits under the river dither like the wall does, so the
- * drop changes nothing but the shadow.
+ * The card in the agent's hand. Screen space, above the pile and the river,
+ * below the hand. A matrix3d homography is written every frame by
+ * lib/carry.ts. If this sits under the intake stack, the remaining pile
+ * cards paint over the grab.
  */
 .carry-layer {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 10;
   overflow: hidden;
   pointer-events: none;
 }
