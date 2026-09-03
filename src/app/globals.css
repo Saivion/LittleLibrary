@@ -1,0 +1,1170 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #ffffff;
+  /* Card shadows share one 4-layer structure so they interpolate (rest ↔ lifted). */
+  --card-shadow-rest:
+    0 1px 0 rgba(255, 255, 255, 0.92) inset,
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 12px 28px rgba(0, 0, 0, 0.07),
+    0 32px 64px rgba(0, 0, 0, 0.06);
+  --card-shadow-lifted:
+    0 1px 0 rgba(255, 255, 255, 0.92) inset,
+    0 2px 4px rgba(0, 0, 0, 0.06),
+    0 22px 40px rgba(0, 0, 0, 0.16),
+    0 54px 92px rgba(0, 0, 0, 0.12);
+  --card-shadow-pile:
+    0 1px 0 rgba(255, 255, 255, 0.92) inset,
+    0 0 0 1px rgba(0, 0, 0, 0.05),
+    0 6px 16px rgba(0, 0, 0, 0.06),
+    0 0 0 rgba(0, 0, 0, 0);
+  --card-shadow-pile-front:
+    0 1px 0 rgba(255, 255, 255, 0.92) inset,
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 18px 36px rgba(0, 0, 0, 0.14);
+  --ink: #111111;
+  --muted: #111111;
+  --font-serif: var(--font-instrument);
+  --font-sans: var(--font-inter);
+  --dither-orange: #e8602e;
+  --dither-red: #c42648;
+  --dither-pink: #ec76a8;
+  --dither-purple: #6c2a80;
+  --dither-foam: #ffc49c;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+}
+
+.scene {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  perspective: 1800px;
+  perspective-origin: 50% 48%;
+  background: #fff;
+}
+
+.scene.is-dragging {
+  cursor: grabbing;
+}
+
+.scene.is-empty {
+  cursor: default;
+  perspective: none;
+  background-color: #fff;
+  background-image: radial-gradient(#d8d8d8 1.1px, transparent 1.25px);
+  background-size: 236px 280px;
+  background-position: 118px 140px;
+}
+
+.scene.is-empty .world {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.world {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+  z-index: 2;
+}
+
+.wall {
+  position: absolute;
+  left: -1416px;
+  top: -1120px;
+  width: 2832px;
+  height: 2240px;
+  background-color: #fff;
+  background-image: radial-gradient(#d8d8d8 1.1px, transparent 1.25px);
+  background-size: 236px 280px;
+  background-position: 118px 140px;
+  transform: translateZ(-8px);
+  pointer-events: none;
+}
+
+/*
+ * One face, three frames. `.tile-face` is the look of a card at world size;
+ * `.tile-card` (wall), `.intake-card` (pile) and `.carry-card` (in the
+ * agent's hand) only decide where and how big it is drawn. Because the face
+ * never changes, picking a card up and setting it down are continuous.
+ */
+.tile-face {
+  width: var(--tile-w, 196px);
+  height: var(--tile-h, 236px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, hsl(var(--tile-hue) 70% 96% / 0.85) 0%, #fff 56px),
+    #fff;
+  border: none;
+  border-radius: 22px;
+  box-shadow: var(--card-shadow-rest);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.tile-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* Position is a compositor transform (never left/top): moving a tile
+     animates on the GPU and triggers no layout. Off-screen tiles are not in
+     the DOM at all (see lib/visibility.ts), so content-visibility is not needed.
+     The pose (rotateY / translateZ) is mirrored by TILE_TILT_DEG / TILE_LIFT_PX
+     in lib/constants.ts so the carried card can be projected onto it. */
+  transform: translate3d(
+      calc(var(--x) + var(--jx, 0px) + var(--dx, 0px)),
+      calc(var(--y) + var(--jy, 0px) + var(--dy, 0px)),
+      0
+    )
+    rotateY(-8deg) translateZ(24px) rotate(var(--rot, 0deg));
+  contain: layout paint;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms ease;
+}
+
+/* The agent's ghost is drawing this card: the wall copy waits, invisible
+   and pixel-aligned underneath, and appears in the commit the ghost leaves. */
+.tile-card.is-held {
+  visibility: hidden;
+}
+
+/* Just set down: the lifted shadow settles into the resting one. */
+.tile-card.is-landing {
+  animation: tile-settle 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tile-settle {
+  from {
+    box-shadow: var(--card-shadow-lifted);
+  }
+  to {
+    box-shadow: var(--card-shadow-rest);
+  }
+}
+
+/* Selection is a per-card class toggled by a boolean selector: only the
+   cards whose membership changed re-render. Outline never affects layout. */
+.tile-card.is-selected {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 5px hsl(var(--tile-hue) 52% 46% / 0.45),
+    0 16px 40px rgba(0, 0, 0, 0.1);
+}
+
+/* Lifted while dragging: no transition (position comes from --dx/--dy each
+   frame), raised in Z so it paints above neighbours in the 3D context. */
+.tile-card.is-lifted {
+  transition: none;
+  transform: translate3d(
+      calc(var(--x) + var(--jx, 0px) + var(--dx, 0px)),
+      calc(var(--y) + var(--jy, 0px) + var(--dy, 0px)),
+      0
+    )
+    rotateY(-8deg) translateZ(96px) rotate(var(--rot, 0deg)) scale(1.03);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 28px 56px rgba(0, 0, 0, 0.16);
+  cursor: grabbing;
+}
+
+.scene.is-moving {
+  cursor: grabbing;
+}
+
+.marquee {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: 9;
+  display: none;
+  border: 1px solid #111;
+  background: rgba(0, 0, 0, 0.05);
+  pointer-events: none;
+  will-change: transform, width, height;
+}
+
+.marquee.is-active {
+  display: block;
+}
+
+.tile-card.is-dealt {
+  animation: tile-deal 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tile-deal {
+  from {
+    transform: translate3d(calc(var(--x) + var(--jx, 0px) + var(--from-x)), calc(var(--y) + var(--jy, 0px) + var(--from-y)), 140px)
+      rotateY(-18deg) rotate(-6deg) scale(0.9);
+    opacity: 0.4;
+  }
+  to {
+    transform: translate3d(calc(var(--x) + var(--jx, 0px) + var(--dx, 0px)), calc(var(--y) + var(--jy, 0px) + var(--dy, 0px)), 0)
+      rotateY(-8deg) translateZ(24px) rotate(var(--rot, 0deg)) scale(1);
+    opacity: 1;
+  }
+}
+
+.tile-mark {
+  display: flex;
+  align-items: center;
+  margin: 16px 18px 0;
+  color: #111;
+  flex: none;
+}
+
+.tile-mark svg {
+  display: block;
+}
+
+.tile-mark.is-compact {
+  margin: 0;
+}
+
+.tile-meta {
+  margin-top: auto;
+  padding: 10px 18px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.28);
+}
+
+.tile-topic {
+  color: hsl(var(--tile-hue) 55% 40%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Topic sections: one path per topic, union of padded card rounds. */
+.sections {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  transform: translateZ(4px);
+  pointer-events: none;
+}
+
+.section-fill {
+  fill: hsl(var(--section-hue) 64% 70% / 0.13);
+  stroke: none;
+  fill-rule: nonzero;
+}
+
+.section-label {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  fill: hsl(var(--section-hue) 28% 38% / 0.7);
+}
+
+/* Connections. One SVG in the wall's coordinate space, one path per edge. */
+.links {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  transform: translateZ(12px);
+  pointer-events: none;
+}
+
+.link {
+  fill: none;
+  stroke: rgba(92, 92, 92, 0.48);
+  stroke-width: 1.65px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 5 7;
+  animation: link-dash 1.15s linear infinite;
+}
+
+.link.is-keyword {
+  stroke: rgba(92, 92, 92, 0.34);
+  stroke-dasharray: 3 8;
+  animation-duration: 1.55s;
+  animation-direction: reverse;
+}
+
+@keyframes link-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.tile-face.is-text .tile-title {
+  font-size: 17px;
+}
+
+.tile-face.is-image .tile-mark,
+.tile-face.is-video .tile-mark {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 1;
+  margin: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+  display: grid;
+  place-items: center;
+}
+
+.tile-face.is-image .tile-copy,
+.tile-face.is-video .tile-copy {
+  flex: none;
+  padding: 12px 16px 2px;
+}
+
+.tile-face.is-image .tile-meta,
+.tile-face.is-video .tile-meta {
+  padding: 8px 16px 14px;
+}
+
+.tile-photo {
+  margin: 14px 14px 0;
+  height: 118px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #f6f6f6;
+  flex: none;
+}
+
+.tile-face.is-image .tile-photo,
+.tile-face.is-video .tile-photo {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  margin: 10px 10px 0;
+}
+
+.tile-face.is-pdf .tile-photo {
+  height: 88px;
+}
+
+.tile-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  /* Fixed box + contain on the card: image load never reflows the wall. */
+  contain: strict;
+}
+
+.tile-copy {
+  padding: 14px 18px 8px;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.tile-title {
+  margin: 0;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.28;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.tile-excerpt {
+  margin: 8px 0 0;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(0, 0, 0, 0.48);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.river-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46%;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  transition: height 7.2s cubic-bezier(0.45, 0.02, 0.2, 1);
+}
+
+.scene:not(.is-empty) .river-wrap {
+  height: 38%;
+}
+
+.river {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  width: 100%;
+  height: 46vh;
+  opacity: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.river.is-ready {
+  opacity: 0.48;
+}
+
+.upload-dock {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.hero {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  max-width: 38rem;
+  padding: 72px 72px 0;
+  text-align: left;
+}
+
+.hero-title {
+  margin: 0;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 42px;
+  font-weight: 400;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+  color: #111;
+}
+
+.hero-riff {
+  margin: 18px 0 0;
+  max-width: 36rem;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 30px;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1.28;
+  color: #111;
+}
+
+.hero-riff-rest {
+  margin-top: 0;
+  color: rgba(0, 0, 0, 0.38);
+}
+
+.hero-mute {
+  color: rgba(0, 0, 0, 0.38);
+}
+
+.hero-link {
+  appearance: none;
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-bottom: 1.5px solid #111;
+  border-radius: 0;
+  background: none;
+  color: #111;
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.hero-link:disabled {
+  opacity: 0.45;
+  cursor: wait;
+  border-bottom-color: transparent;
+}
+
+.hero-hover {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.hero-hover-ink {
+  position: relative;
+  z-index: 1;
+  color: #111;
+  transition: opacity 160ms ease;
+}
+
+.hero-hover.is-hot .hero-hover-ink {
+  opacity: 0.1;
+}
+
+.hero-hover-svg {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+
+.hero-hover-svg text {
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 1em;
+  font-weight: 400;
+  letter-spacing: inherit;
+  stroke-linejoin: round;
+}
+
+.hero-hover-ghost {
+  fill: none;
+  stroke: rgba(17, 17, 17, 0.28);
+  stroke-width: 0.7;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.hero-hover.is-hot .hero-hover-ghost {
+  opacity: 0.4;
+}
+
+.hero-hover-outline {
+  fill: none;
+  stroke: rgba(17, 17, 17, 0.34);
+  stroke-width: 0.7;
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+}
+
+.hero-hover.is-hot .hero-hover-outline {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 4s ease-in-out;
+}
+
+.hero-hover-glow {
+  stroke-width: 0.9;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.hero-hover.is-hot .hero-hover-glow {
+  opacity: 0.78;
+}
+
+.hero-link:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.hero-note {
+  margin: 28px 0 0;
+  max-width: 28rem;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.34);
+}
+
+@media (max-width: 720px) {
+  .hero-copy {
+    max-width: none;
+    padding: 36px 28px 0;
+  }
+
+  .hero-title {
+    font-size: 32px;
+  }
+
+  .hero-riff {
+    font-size: 22px;
+    max-width: none;
+  }
+}
+
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.upload-button {
+  appearance: none;
+  border: 1px solid #111;
+  background: #111;
+  color: #fff;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  padding: 10px 20px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.upload-button.is-quiet {
+  background: #fff;
+  color: #222;
+  border-color: #d6d6d6;
+}
+
+.upload-button:hover {
+  background: #000;
+  color: #fff;
+}
+
+.upload-button.is-quiet:hover {
+  background: #f4f4f4;
+  color: #111;
+}
+
+.upload-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.upload-button:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 3px;
+}
+
+.upload-dock.is-rail {
+  left: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  gap: 0;
+  padding: 12px 10px;
+  overflow: visible;
+  background: #fff;
+  border-radius: 28px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 28px rgba(0, 0, 0, 0.08);
+}
+
+.upload-dock.is-rail .upload-actions {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.upload-dock.is-rail .upload-button,
+.upload-dock.is-rail .upload-button.is-quiet {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  color: #111;
+  box-shadow: none;
+}
+
+.upload-dock.is-rail .upload-button:hover,
+.upload-dock.is-rail .upload-button.is-quiet:hover {
+  background: #f3f3f3;
+  color: #111;
+}
+
+.rail-tip {
+  position: absolute;
+  left: calc(100% + 22px);
+  top: 50%;
+  z-index: 2;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 22px rgba(0, 0, 0, 0.08);
+  color: #111;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 14px;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-6px, -50%);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.upload-dock.is-rail .upload-button:hover .rail-tip,
+.upload-dock.is-rail .upload-button:focus-visible .rail-tip {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
+.agent-figure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Hot-spot is written every frame from the hand store. It sits on the
+     centre of the fist (15px, 16px into the 28px mark) so the hand closes
+     on the card's grip point rather than beside it. */
+  transform: translate3d(var(--ax, 0px), var(--ay, 0px), 0) rotate(var(--at, 0deg))
+    translate(-15px, -16px);
+  will-change: transform;
+  pointer-events: none;
+}
+
+.agent-cursor {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.28));
+}
+
+.agent-cursor-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition:
+    opacity 220ms ease,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-cursor-face.is-open {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.agent-cursor-face.is-shut {
+  opacity: 0;
+  transform: scale(0.86);
+}
+
+.agent-cursor.is-closed .is-open {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+.agent-cursor.is-closed .is-shut {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.agent-cursor-svg {
+  display: block;
+}
+
+.agent-figure.is-grab .agent-cursor {
+  animation: agent-clench 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-figure.is-place .agent-cursor {
+  animation: agent-release 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08);
+}
+
+.agent-brand {
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.agent-tool {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@keyframes agent-clench {
+  0% {
+    transform: scale(1.08) rotate(-4deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes agent-release {
+  0% {
+    transform: scale(0.92);
+  }
+  55% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.intake-stack {
+  position: absolute;
+  left: 28px;
+  top: 28px;
+  width: 108px;
+  height: 172px;
+  z-index: 7;
+  pointer-events: none;
+}
+
+/*
+ * The intake pile. Each card is the full tile face at world size, scaled to
+ * a shared 108px width; cards sit almost on top of each other (a stack of
+ * paper, not a fanned hand): each deeper layer drops a few px, shrinks a
+ * touch and dims, so about four edges peek out under the front card. The
+ * front card is squared up and carries the strongest shadow: it reads as
+ * "next up", and the hand picks it up exactly where it lies.
+ *
+ * transform-origin is 0 0 and the centring is part of the transform, so the
+ * flight controller can read the card's exact screen quad from its live
+ * computed matrix (also mid-transition). Position is driven by --layer, so
+ * when a card is taken the rest slide up on a transition instead of snapping.
+ */
+.intake-card {
+  --layer: 0;
+  --lift: 0px;
+  --lift-scale: 1;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  box-shadow: var(--card-shadow-pile);
+  opacity: calc(1 - var(--layer) * 0.14);
+  transform: translate(
+      calc(var(--cx) + var(--layer) * 2px),
+      calc(var(--cy) + var(--layer) * 5px + var(--lift))
+    )
+    rotate(var(--rot, 0deg))
+    scale(calc(var(--fit) * (1 - var(--layer) * 0.035) * var(--lift-scale)))
+    translate(calc(var(--tile-w) / -2), calc(var(--tile-h) / -2));
+  will-change: transform;
+  transition:
+    transform 460ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 300ms ease,
+    box-shadow 300ms ease;
+}
+
+.intake-card.is-front {
+  box-shadow: var(--card-shadow-pile-front);
+}
+
+/* Hand is on its way: the front card lifts a hair so it's clearly the pick. */
+.intake-card.is-reaching {
+  --lift: -4px;
+  --lift-scale: 1.015;
+}
+
+/* Backwards fill only: once dealt in, the live transform (and its transition)
+   takes over so the pile can settle when a card is removed. */
+.intake-card.is-in {
+  animation: card-pull-in 520ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/* The hand has it: the ghost (CarryCard) is drawn over these exact pixels in
+   the same commit, so the pile copy simply stops painting. */
+.intake-card.is-held {
+  visibility: hidden;
+  transition: none;
+}
+
+@keyframes card-pull-in {
+  from {
+    transform: translate(calc(var(--cx) - 90px), calc(var(--cy) - 80px))
+      rotate(-14deg)
+      scale(calc(var(--fit) * 0.86))
+      translate(calc(var(--tile-w) / -2), calc(var(--tile-h) / -2));
+    opacity: 0;
+  }
+  to {
+    transform: translate(
+        calc(var(--cx) + var(--layer) * 2px),
+        calc(var(--cy) + var(--layer) * 5px + var(--lift))
+      )
+      rotate(var(--rot, 0deg))
+      scale(calc(var(--fit) * (1 - var(--layer) * 0.035) * var(--lift-scale)))
+      translate(calc(var(--tile-w) / -2), calc(var(--tile-h) / -2));
+    opacity: calc(1 - var(--layer) * 0.14);
+  }
+}
+
+/*
+ * The card in the agent's hand. Screen space, above the wall and below the
+ * hand; its transform is a matrix3d homography written every frame by
+ * lib/carry.ts. It sits under the river dither like the wall does, so the
+ * drop changes nothing but the shadow.
+ */
+.carry-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.carry-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  backface-visibility: hidden;
+  will-change: transform;
+  box-shadow: var(--card-shadow-lifted);
+  animation: carry-lift 220ms ease-out both;
+}
+
+@keyframes carry-lift {
+  from {
+    box-shadow: var(--card-shadow-pile-front);
+  }
+  to {
+    box-shadow: var(--card-shadow-lifted);
+  }
+}
+
+.inspect-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.28);
+  touch-action: pan-y;
+}
+
+.inspect-sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(860px, 100%);
+  height: min(92vh, 920px);
+  overflow: hidden;
+  background: #fff;
+  border: none;
+  border-radius: 24px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    0 18px 48px rgba(0, 0, 0, 0.08),
+    0 40px 90px rgba(0, 0, 0, 0.06);
+}
+
+.inspect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: none;
+  padding: 22px 28px 0;
+}
+
+.inspect-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #111;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 14px;
+  padding: 4px 2px;
+  cursor: pointer;
+  flex: none;
+}
+
+.inspect-close:hover {
+  opacity: 0.5;
+}
+
+.inspect-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 18px 32px 48px;
+}
+
+.inspect-title {
+  margin: 0;
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: #111;
+}
+
+.inspect-body {
+  margin: 20px 0 0;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #111;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.inspect-source {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.4);
+  overflow-wrap: anywhere;
+}
+
+.inspect-photo {
+  margin: 0 0 24px;
+  background: #fff;
+  border: none;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.inspect-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  background: #000;
+}
+
+.inspect-photo img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+}
+
+.scene.is-inspecting .world,
+.scene.is-inspecting .river-wrap,
+.scene.is-inspecting .intake-stack,
+.scene.is-inspecting .carry-layer,
+.scene.is-inspecting .agent-figure {
+  filter: blur(14px);
+  pointer-events: none;
+}
+
+.scene.is-inspecting .upload-dock {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world {
+    will-change: auto;
+  }
+
+  .link,
+  .tile-card.is-dealt,
+  .tile-card.is-landing,
+  .intake-card,
+  .intake-card.is-in,
+  .carry-card,
+  .agent-figure,
+  .river-wrap {
+    animation: none;
+    transition: none;
+  }
+
+  .hero-hover-ink,
+  .hero-hover-ghost,
+  .hero-hover-outline,
+  .hero-hover-glow {
+    transition: none;
+  }
+
+  .hero-hover-outline {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+  }
+
+  .rail-tip {
+    transition: none;
+  }
+}
